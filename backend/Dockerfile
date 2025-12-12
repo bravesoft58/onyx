@@ -119,6 +119,8 @@ COPY --chown=onyx:onyx ./static /app/static
 COPY --chown=onyx:onyx ./scripts/debugging /app/scripts/debugging
 COPY --chown=onyx:onyx ./scripts/force_delete_connector_by_id.py /app/scripts/force_delete_connector_by_id.py
 COPY --chown=onyx:onyx ./scripts/supervisord_entrypoint.sh /app/scripts/supervisord_entrypoint.sh
+# Ensure LF line endings even if the repo was checked out with CRLF (common on Windows)
+RUN sed -i 's/\r$//' /app/scripts/supervisord_entrypoint.sh
 RUN chmod +x /app/scripts/supervisord_entrypoint.sh
 
 # Put logo in assets

@@ -19,14 +19,20 @@ def _get_trimmed_key(key: str) -> bytes:
     encoded_key = key.encode()
     key_length = len(encoded_key)
     if key_length < 16:
-        raise RuntimeError("Invalid ENCRYPTION_KEY_SECRET - too short")
-    elif key_length > 32:
-        key = key[:32]
-    elif key_length not in (16, 24, 32):
-        valid_lengths = [16, 24, 32]
-        key = key[: min(valid_lengths, key=lambda x: abs(x - key_length))]
+        raise RuntimeError("Invalid ENCRYPTION_KEY_SECRET - too short (must be >= 16 bytes)")
 
-    return encoded_key
+    # AES supports 16 / 24 / 32 byte keys.
+    # For convenience we allow longer keys and deterministically trim.
+    if key_length > 32:
+        return encoded_key[:32]
+
+    if key_length in (16, 24, 32):
+        return encoded_key
+
+    # For intermediate lengths, trim down to the closest supported length.
+    valid_lengths = (16, 24, 32)
+    closest_len = min(valid_lengths, key=lambda x: abs(x - key_length))
+    return encoded_key[:closest_len]
 
 
 def _encrypt_string(input_str: str) -> bytes:
@@ -47,6 +53,13 @@ def _encrypt_string(input_str: str) -> bytes:
 
 def _decrypt_bytes(input_bytes: bytes) -> str:
     if not ENCRYPTION_KEY_SECRET:
+        return input_bytes.decode()
+
+    # Backwards compatibility: prior to enabling encryption (or in CE),
+    # secrets may already be stored as raw UTF-8 bytes. EE-encrypted bytes are:
+    #   iv(16 bytes) + ciphertext(N bytes, N is multiple of AES block size=16)
+    # If the bytes don't match this shape, treat as plaintext.
+    if len(input_bytes) <= 16 or ((len(input_bytes) - 16) % 16 != 0):
         return input_bytes.decode()
 
     key = _get_trimmed_key(ENCRYPTION_KEY_SECRET)
