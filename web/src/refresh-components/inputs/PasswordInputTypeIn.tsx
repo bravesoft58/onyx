@@ -1,183 +1,220 @@
 "use client";
 
 import * as React from "react";
-import { useState, useRef, useCallback } from "react";
+import InputTypeIn, {
+  InputTypeInProps,
+} from "@/refresh-components/inputs/InputTypeIn";
 import IconButton from "@/refresh-components/buttons/IconButton";
-import { noProp, cn } from "@/lib/utils";
-import { SvgEye, SvgEyeClosed, SvgX } from "@opal/icons";
-import {
-  innerClasses,
-  wrapperClasses,
-} from "@/refresh-components/inputs/styles";
+import { noProp } from "@/lib/utils";
+import { SvgEye, SvgEyeClosed } from "@opal/icons";
 
 // ASTERISK OPERATOR (U+2217) - better sized than bullet (•) per design guidelines
 const MASK_CHARACTER = "∗";
 
-export interface PasswordInputTypeInProps
-  extends Omit<
-    React.InputHTMLAttributes<HTMLInputElement>,
-    "type" | "children"
-  > {
-  internal?: boolean;
-  error?: boolean;
-  disabled?: boolean;
-  // When true, the actual value cannot be retrieved (e.g., after submission)
-  // Shows fixed-length mask and disables reveal functionality
-  isNonRevealable?: boolean;
-  // Number of mask characters to show in non-revealable mode (default: 8)
-  nonRevealableMaskLength?: number;
-  // Show a clear button when there's a value
-  showClearButton?: boolean;
-  // Custom clear handler
-  onClear?: () => void;
+// Backend placeholder pattern - indicates a stored value that can't be revealed
+const BACKEND_PLACEHOLDER_PATTERN = /^•+$/; // All bullet characters (U+2022)
+
+/**
+ * Check if a value is a backend placeholder (all bullet characters).
+ * The backend sends this to indicate a stored secret exists without revealing it.
+ */
+function isBackendPlaceholder(value: string): boolean {
+  return !!value && BACKEND_PLACEHOLDER_PATTERN.test(value);
 }
 
+export interface PasswordInputTypeInProps
+  extends Omit<InputTypeInProps, "type" | "rightSection" | "leftSearchIcon"> {
+  /**
+   * When true, the reveal toggle is disabled.
+   * Use this when displaying a stored/masked value from the backend
+   * that cannot actually be revealed.
+   * The input remains editable so users can type a new value.
+   */
+  isNonRevealable?: boolean;
+}
+
+/**
+ * PasswordInputTypeIn Component
+ *
+ * A password input with custom mask character (∗) and reveal/hide toggle.
+ * Built on top of InputTypeIn for consistency.
+ *
+ * Features:
+ * - Custom mask character (∗) instead of browser default
+ * - Show/hide toggle button
+ * - Optional `isNonRevealable` prop to disable reveal (for stored backend values)
+ *
+ * Per design guidelines:
+ * - Show/hide button only shows when input has value OR is focused
+ * - When revealed, the toggle icon is more prominent (action style)
+ * - When hidden, the toggle icon is muted (internal style)
+ */
 const PasswordInputTypeIn = React.forwardRef<
   HTMLInputElement,
   PasswordInputTypeInProps
->(
-  (
-    {
-      internal,
-      error,
-      disabled,
-      isNonRevealable = false,
-      nonRevealableMaskLength = 8,
-      showClearButton = false,
-      onClear,
-      value,
-      className,
-      onChange,
-      ...props
+>(function PasswordInputTypeIn(
+  {
+    isNonRevealable = false,
+    value,
+    onChange,
+    onFocus,
+    onBlur,
+    disabled,
+    showClearButton = false,
+    ...props
+  },
+  ref
+) {
+  const [isPasswordVisible, setIsPasswordVisible] = React.useState(false);
+  const [isFocused, setIsFocused] = React.useState(false);
+
+  // Track the actual password value
+  const realValue = String(value || "");
+
+  const hasValue = realValue.length > 0;
+
+  // Disable reveal for backend placeholders (all bullet chars) since there's nothing useful to show
+  const effectiveNonRevealable =
+    isNonRevealable || isBackendPlaceholder(realValue);
+
+  // Determine if we should show the password as masked
+  const isHidden = !isPasswordVisible || effectiveNonRevealable;
+
+  // Compute the display value
+  const getDisplayValue = (): string => {
+    if (isHidden) {
+      return MASK_CHARACTER.repeat(realValue.length);
+    }
+    return realValue;
+  };
+
+  const handleFocus = React.useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      setIsFocused(true);
+      onFocus?.(e);
     },
-    ref
-  ) => {
-    const [isPasswordVisible, setIsPasswordVisible] = useState(false);
-    const localInputRef = useRef<HTMLInputElement | null>(null);
+    [onFocus]
+  );
 
-    // Combine forwarded ref with local ref
-    const setInputRef = useCallback(
-      (node: HTMLInputElement | null) => {
-        localInputRef.current = node;
-        if (typeof ref === "function") {
-          ref(node);
-        } else if (ref) {
-          (ref as React.MutableRefObject<HTMLInputElement | null>).current =
-            node;
-        }
-      },
-      [ref]
-    );
+  const handleBlur = React.useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      setIsFocused(false);
+      onBlur?.(e);
+    },
+    [onBlur]
+  );
 
-    const variant = internal
-      ? "internal"
-      : error
-        ? "error"
-        : disabled
-          ? "disabled"
-          : "main";
-
-    const handleClear = useCallback(() => {
-      if (onClear) {
-        onClear();
+  /**
+   * Handle input changes when masked.
+   * Since we display mask characters, we need to figure out what the user
+   * actually typed and update the real value accordingly.
+   */
+  const handleChange = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!isHidden) {
+        // When visible, just pass through the change
+        onChange?.(e);
         return;
       }
 
-      onChange?.({
-        target: { value: "" },
-        currentTarget: { value: "" },
-        type: "change",
-        bubbles: true,
-        cancelable: true,
-      } as React.ChangeEvent<HTMLInputElement>);
-    }, [onClear, onChange]);
+      const newDisplayValue = e.target.value;
+      const oldLength = realValue.length;
+      const newLength = newDisplayValue.length;
 
-    // Generate mask string matching value length or fixed length for non-revealable
-    const getMaskedDisplay = () => {
-      if (isNonRevealable) {
-        return MASK_CHARACTER.repeat(nonRevealableMaskLength);
+      let newRealValue: string;
+
+      if (newLength === 0) {
+        // User cleared everything
+        newRealValue = "";
+      } else if (newLength > oldLength) {
+        // Characters were added - extract non-mask characters
+        const addedChars = newDisplayValue
+          .split("")
+          .filter((char) => char !== MASK_CHARACTER)
+          .join("");
+
+        if (addedChars.length > 0) {
+          newRealValue = realValue + addedChars;
+        } else {
+          newRealValue = realValue;
+        }
+      } else if (newLength < oldLength) {
+        // Characters were deleted
+        const charsDeleted = oldLength - newLength;
+        newRealValue = realValue.slice(0, -charsDeleted);
+      } else {
+        newRealValue = realValue;
       }
-      const strValue = String(value || "");
-      return MASK_CHARACTER.repeat(strValue.length);
-    };
 
-    // Determine if we should show the masked overlay
-    const shouldShowMask = !isPasswordVisible || isNonRevealable;
+      // Create a minimal synthetic event with just what Formik needs.
+      // DOM element properties don't spread properly, so we only include
+      // the essential properties: name, value, and type.
+      const syntheticEvent = {
+        target: {
+          name: e.target.name,
+          value: newRealValue,
+          type: "text",
+        },
+        currentTarget: {
+          name: e.currentTarget.name,
+          value: newRealValue,
+          type: "text",
+        },
+        type: "change",
+        persist: () => {},
+      } as unknown as React.ChangeEvent<HTMLInputElement>;
 
-    // Get the value to display in the input
-    // In non-revealable mode, we don't have the actual value to show
-    const displayValue = isNonRevealable
-      ? getMaskedDisplay()
-      : shouldShowMask
-        ? value
-        : value;
+      onChange?.(syntheticEvent);
+    },
+    [isHidden, realValue, onChange]
+  );
 
-    return (
-      <div
-        className={cn(
-          "flex flex-row items-center justify-between w-full h-fit p-1.5 rounded-08 relative",
-          wrapperClasses[variant],
-          className
-        )}
-        onClick={() => {
-          if (!isNonRevealable) {
-            localInputRef.current?.focus();
-          }
-        }}
-      >
-        {/* Mask overlay - shows custom "∗" characters when password is hidden */}
-        {shouldShowMask && (value || isNonRevealable) && (
-          <div
-            className={cn(
-              "absolute left-0 top-0 bottom-0 flex items-center px-2 pointer-events-none select-none tracking-[0.1em]",
-              innerClasses[variant]
-            )}
-            aria-hidden="true"
-          >
-            {getMaskedDisplay()}
-          </div>
-        )}
+  // Show/hide button: only visible when there's a value OR input is focused
+  const showToggleButton = hasValue || isFocused;
 
-        <input
-          ref={setInputRef}
-          type={shouldShowMask ? "password" : "text"}
-          disabled={disabled || isNonRevealable}
-          value={displayValue}
-          onChange={onChange}
-          className={cn(
-            "w-full h-[1.5rem] bg-transparent p-0.5 focus:outline-none",
-            innerClasses[variant],
-            // Make the native password bullets invisible when showing our custom mask
-            shouldShowMask && (value || isNonRevealable) && "text-transparent"
-          )}
-          autoComplete="off"
-          {...props}
-        />
-
-        {showClearButton && value && !isNonRevealable && (
+  return (
+    <InputTypeIn
+      ref={ref}
+      value={getDisplayValue()}
+      onChange={handleChange}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      disabled={disabled}
+      showClearButton={showClearButton}
+      autoComplete="off"
+      rightSection={
+        showToggleButton ? (
           <IconButton
-            icon={SvgX}
-            disabled={disabled}
-            onClick={noProp(handleClear)}
+            icon={
+              isPasswordVisible && !effectiveNonRevealable
+                ? SvgEye
+                : SvgEyeClosed
+            }
+            disabled={disabled || effectiveNonRevealable}
+            onClick={noProp(() => setIsPasswordVisible((v) => !v))}
             type="button"
+            action={isPasswordVisible && !effectiveNonRevealable}
             internal
-            aria-label="Clear password"
+            tooltip={
+              effectiveNonRevealable
+                ? "Value cannot be revealed"
+                : isPasswordVisible
+                  ? "Hide password"
+                  : "Show password"
+            }
+            aria-label={
+              effectiveNonRevealable
+                ? "Value cannot be revealed"
+                : isPasswordVisible
+                  ? "Hide password"
+                  : "Show password"
+            }
           />
-        )}
-
-        <IconButton
-          icon={isPasswordVisible && !isNonRevealable ? SvgEye : SvgEyeClosed}
-          disabled={disabled || isNonRevealable}
-          onClick={noProp(() => setIsPasswordVisible((v) => !v))}
-          type="button"
-          internal
-          aria-label={isPasswordVisible ? "Hide password" : "Show password"}
-        />
-      </div>
-    );
-  }
-);
-
-PasswordInputTypeIn.displayName = "PasswordInputTypeIn";
+        ) : undefined
+      }
+      {...props}
+    />
+  );
+});
 
 export default PasswordInputTypeIn;
